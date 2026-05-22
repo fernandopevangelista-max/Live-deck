@@ -36,11 +36,7 @@ services:
     startCommand: npm start
     envVars:
       - key: NEXT_PUBLIC_API_URL
-        fromService:
-          name: livedeck-backend
-          type: web
-          property: host
-          envVarKey: NEXT_PUBLIC_API_URL
+        sync: false
 
 databases:
   - name: livedeck-db
