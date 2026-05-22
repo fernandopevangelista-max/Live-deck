@@ -11,6 +11,7 @@ from database import get_db
 from models import Dataset, Project
 from routers.auth import get_current_user, User
 from services.data_profiler import profile_dataset
+from services.data_analyst import run_data_analyst
 
 router = APIRouter(tags=["datasets"])
 
@@ -62,6 +63,10 @@ async def upload_dataset(
         shutil.copyfileobj(file.file, f)
 
     profile = profile_dataset(file_path, selected_sheet)
+
+    # Run deep AI analysis on the dataset
+    ai_analysis = await run_data_analyst(profile, db=db)
+    profile["ai_analysis"] = ai_analysis
 
     dataset = Dataset(
         project_id=project_id,

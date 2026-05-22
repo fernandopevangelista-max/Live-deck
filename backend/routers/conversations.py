@@ -9,7 +9,7 @@ from models import Conversation, ConversationMessage, Prompt, Project, Dataset
 from routers.auth import get_current_user, User
 from services.llm_gateway import call_llm
 from services.prompt_architect import get_system_prompt_with_context
-from services.data_profiler import get_data_summary_for_prompt
+from services.data_analyst import get_full_context_for_chat
 
 router = APIRouter(tags=["conversations"])
 
@@ -120,7 +120,7 @@ async def send_message(
     if convo.dataset_id:
         dataset = db.query(Dataset).filter(Dataset.id == convo.dataset_id).first()
         if dataset and dataset.profile_data:
-            dataset_summary = get_data_summary_for_prompt(dataset.profile_data)
+            dataset_summary = get_full_context_for_chat(dataset.profile_data)
 
     system_prompt = get_system_prompt_with_context(dataset_summary)
 

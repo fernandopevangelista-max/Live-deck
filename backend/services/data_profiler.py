@@ -93,7 +93,7 @@ def _build_profile(df: pd.DataFrame, file_name: str, sheets: List[str], suggeste
 
     detected_period = _detect_period(df)
 
-    preview_df = df.head(10)
+    preview_df = df.head(50)
     preview = []
     for _, row in preview_df.iterrows():
         row_dict = {}
@@ -102,10 +102,38 @@ def _build_profile(df: pd.DataFrame, file_name: str, sheets: List[str], suggeste
             if pd.isna(val):
                 row_dict[str(col)] = None
             elif isinstance(val, (int, float)):
-                row_dict[str(col)] = val
+                row_dict[str(col)] = round(float(val), 4) if not pd.isna(val) else None
             else:
                 row_dict[str(col)] = str(val)
         preview.append(row_dict)
+
+    statistics = {}
+    for col in numeric_cols + percentage_cols:
+        try:
+            s = df[col].dropna()
+            if len(s) > 0:
+                statistics[col] = {
+                    "min": round(float(s.min()), 4),
+                    "max": round(float(s.max()), 4),
+                    "mean": round(float(s.mean()), 4),
+                    "median": round(float(s.median()), 4),
+                    "std": round(float(s.std()), 4) if len(s) > 1 else 0,
+                    "sum": round(float(s.sum()), 4),
+                }
+        except Exception:
+            pass
+
+    categorical_stats = {}
+    for col in text_cols:
+        try:
+            vc = df[col].dropna().value_counts()
+            top_values = [{"value": str(v), "count": int(c)} for v, c in vc.head(10).items()]
+            categorical_stats[col] = {
+                "unique_count": int(df[col].nunique()),
+                "top_values": top_values,
+            }
+        except Exception:
+            pass
 
     return {
         "file_name": file_name,
@@ -119,6 +147,8 @@ def _build_profile(df: pd.DataFrame, file_name: str, sheets: List[str], suggeste
         "text_cols": text_cols,
         "percentage_cols": percentage_cols,
         "null_counts": null_counts,
+        "statistics": statistics,
+        "categorical_stats": categorical_stats,
         "preview": preview,
     }
 

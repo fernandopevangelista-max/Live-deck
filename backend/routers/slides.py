@@ -7,11 +7,12 @@ from datetime import datetime
 import os
 
 from database import get_db
-from models import Slide, Prompt, Project, Dataset
+from models import Slide, Prompt, Project, Dataset, Conversation
 from routers.auth import get_current_user, User
 from services.llm_gateway import call_llm
 from services.slide_builder import SLIDE_BUILDER_SYSTEM, build_slide_prompt, extract_html_from_response
-from services.data_profiler import get_data_summary_for_prompt
+from services.data_analyst import get_full_context_for_chat
+from services.agents import run_qa, run_full_prompt_pipeline
 
 router = APIRouter(tags=["slides"])
 
@@ -24,6 +25,12 @@ class SlideUpdate(BaseModel):
     status: Optional[str] = None
     section: Optional[str] = None
     slide_type: Optional[str] = None
+
+
+class PipelineRequest(BaseModel):
+    intent: str
+    dataset_id: Optional[int] = None
+    conversation_id: Optional[int] = None
 
 
 class SlideResponse(BaseModel):
@@ -41,6 +48,97 @@ class SlideResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+@router.post("/api/projects/{project_id}/slides/pipeline")
+async def run_slide_pipeline(
+    project_id: int,
+    body: PipelineRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Full 3-agent pipeline: Data Sonda → Analyst → Design → Slide Builder → QA
+    Returns the generated prompt and HTML slide.
+    """
+    _get_project(project_id, current_user, db)
+
+    profile = None
+    if body.dataset_id:
+        dataset = db.query(Dataset).filter(Dataset.id == body.dataset_id).first()
+        if dataset and dataset.profile_data:
+            profile = dataset.profile_data
+
+    if not profile:
+        raise HTTPException(status_code=400, detail="Base de dados não encontrada ou sem perfil")
+
+    # Run 3-agent pipeline
+    pipeline_result = await run_full_prompt_pipeline(
+        user_intent=body.intent,
+        profile=profile,
+        db=db,
+    )
+
+    # Generate HTML with Slide Builder
+    user_message = build_slide_prompt(
+        pipeline_result["final_prompt"],
+        get_full_context_for_chat(profile),
+        profile.get("preview"),
+    )
+
+    try:
+        html_content = await call_llm(
+            messages=[{"role": "user", "content": user_message}],
+            system_prompt=SLIDE_BUILDER_SYSTEM,
+            db=db,
+        )
+        html_content = extract_html_from_response(html_content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Slide Builder error: {str(e)}")
+
+    # QA validation
+    qa_result = await run_qa(html_content, db=db)
+
+    # Save to DB
+    prompt_obj = Prompt(
+        conversation_id=body.conversation_id,
+        project_id=project_id,
+        dataset_id=body.dataset_id,
+        content=pipeline_result["final_prompt"],
+        title=body.intent[:200],
+    )
+    db.add(prompt_obj)
+    db.commit()
+    db.refresh(prompt_obj)
+
+    slide = Slide(
+        project_id=project_id,
+        prompt_id=prompt_obj.id,
+        dataset_id=body.dataset_id,
+        title=body.intent[:200],
+        html_content=html_content,
+        status="ready" if qa_result["status"] == "approved" else "needs_review",
+    )
+    db.add(slide)
+    db.commit()
+    db.refresh(slide)
+
+    slide_path = os.path.join(STORAGE_DIR, f"slide_{slide.id}.html")
+    with open(slide_path, "w", encoding="utf-8") as f:
+        f.write(html_content)
+
+    return {
+        "slide_id": slide.id,
+        "prompt_id": prompt_obj.id,
+        "status": slide.status,
+        "qa": qa_result,
+        "pipeline": {
+            "sonda": pipeline_result["sonda"],
+            "analyst": pipeline_result["analyst"],
+            "design": pipeline_result["design"],
+        },
+        "html_preview": html_content[:500] + "...",
+    }
 
 
 @router.post("/api/prompts/{prompt_id}/build-slide", response_model=SlideResponse)
@@ -71,7 +169,7 @@ async def build_slide(
     if prompt.dataset_id:
         dataset = db.query(Dataset).filter(Dataset.id == prompt.dataset_id).first()
         if dataset and dataset.profile_data:
-            dataset_summary = get_data_summary_for_prompt(dataset.profile_data)
+            dataset_summary = get_full_context_for_chat(dataset.profile_data)
             dataset_preview = dataset.profile_data.get("preview")
 
     user_message = build_slide_prompt(prompt.content, dataset_summary, dataset_preview)
@@ -84,12 +182,15 @@ async def build_slide(
         )
         html_content = extract_html_from_response(html_content)
 
+        # QA validation
+        qa_result = await run_qa(html_content, db=db)
+
         slide_path = os.path.join(STORAGE_DIR, f"slide_{slide.id}.html")
         with open(slide_path, "w", encoding="utf-8") as f:
             f.write(html_content)
 
         slide.html_content = html_content
-        slide.status = "ready"
+        slide.status = "ready" if qa_result["status"] == "approved" else "needs_review"
     except Exception as e:
         slide.status = "error"
         slide.error_message = str(e)
@@ -119,8 +220,7 @@ def get_slide(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    slide = _get_slide(slide_id, current_user, db)
-    return slide
+    return _get_slide(slide_id, current_user, db)
 
 
 @router.get("/api/slides/{slide_id}/html", response_class=HTMLResponse)
@@ -158,7 +258,7 @@ async def regenerate_slide(
     if slide.dataset_id:
         dataset = db.query(Dataset).filter(Dataset.id == slide.dataset_id).first()
         if dataset and dataset.profile_data:
-            dataset_summary = get_data_summary_for_prompt(dataset.profile_data)
+            dataset_summary = get_full_context_for_chat(dataset.profile_data)
             dataset_preview = dataset.profile_data.get("preview")
 
     user_message = build_slide_prompt(prompt.content, dataset_summary, dataset_preview)
@@ -171,12 +271,14 @@ async def regenerate_slide(
         )
         html_content = extract_html_from_response(html_content)
 
+        qa_result = await run_qa(html_content, db=db)
+
         slide_path = os.path.join(STORAGE_DIR, f"slide_{slide.id}.html")
         with open(slide_path, "w", encoding="utf-8") as f:
             f.write(html_content)
 
         slide.html_content = html_content
-        slide.status = "ready"
+        slide.status = "ready" if qa_result["status"] == "approved" else "needs_review"
     except Exception as e:
         slide.status = "error"
         slide.error_message = str(e)
