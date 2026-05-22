@@ -10,11 +10,11 @@ from routers import auth, projects, datasets, conversations, slides, decks
 
 app = FastAPI(title="LiveDeck Studio API", version="1.0.0")
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4000")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_URL, "http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[FRONTEND_URL, "http://localhost:4000", "http://127.0.0.1:4000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
