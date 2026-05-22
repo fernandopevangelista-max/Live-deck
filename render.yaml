@@ -1,0 +1,49 @@
+services:
+  - type: web
+    name: livedeck-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:app -w 2 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
+    envVars:
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        value: deepseek-chat
+      - key: LLM_TEMPERATURE
+        value: "0.2"
+      - key: LLM_MAX_OUTPUT_TOKENS
+        value: "12000"
+      - key: LLM_TIMEOUT_SECONDS
+        value: "180"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: livedeck-db
+          property: connectionString
+      - key: FRONTEND_URL
+        sync: false
+      - key: RENDER
+        value: "true"
+    healthCheckPath: /health
+
+  - type: web
+    name: livedeck-frontend
+    runtime: node
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        fromService:
+          name: livedeck-backend
+          type: web
+          property: host
+          envVarKey: NEXT_PUBLIC_API_URL
+
+databases:
+  - name: livedeck-db
+    databaseName: livedeck
+    user: livedeck
+    plan: free
